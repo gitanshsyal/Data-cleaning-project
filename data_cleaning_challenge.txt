@@ -1,0 +1,39 @@
+Azure databricks data cleaning challenge-->
+
+| Field         | Rule                                             | Source of validation |
+| ------------- | ------------------------------------------------ | -------------------- |
+| `CustomerID`  | Not null                                         | Inline               |
+| `Name`        | Not null                                         | Inline               |
+| `Email`       | Must not be empty and should contain “@”         | Inline               |
+| `State`       | Must exist in `Valid_States` table in Azure SQL  | Lookup               |
+| `CountryCode` | Must exist in `Valid_Country` table in Azure SQL | Lookup               |
+| `Age`         | Not null and must be ≥ 18                        | Inline               |
+
+👉 If a record fails any rule, it’s bad → goes to /files/discarded/
+👉 If it passes all → goes to /files/source/
+
+from pyspark.sql.functions import *
+dbServer = 'servercustomer1'
+dbPort = '1433'
+dbName = 'dbname1'
+databricksScope = 'customer-token'
+dbPassword = dbutils.secrets.get(scope = databricksScope, key='db-password')
+dbUser= dbutils.secrets.get(scope = databricksScope, key='db-user-name')
+connectionUrl ='jdbc:sqlserver://{}.database.windows.net:{};database={};user={};'.format(dbServer,dbPort, dbName, dbUser)
+connectionProperties = {
+'password': dbPassword,
+'driver':'com.microsoft.sqlserver.jdbc.SQLServerDriver'
+}
+validstatesDf = spark.read.jdbc(url = connectionUrl, table =
+'dbo.Valid_States',
+properties = connectionProperties )
+valid_country_Df = spark.read.jdbc(url = connectionUrl, table =
+'dbo.Valid_Country',
+properties = connectionProperties )
+customer_schema='customer_id int,name string,email string,state string,age double'
+customer_df=spark.read.format('csv').option('header',True).schema(customer_schema).load('abfss://source@storageaccountcust.dfs.core.windows.net/files/raw/customer_files.csv')
+#display(validstatesDf.select('StateCode').collect())
+state_codes=[row['StateCode'] for row in validstatesDf.select('StateCode').collect()]
+state_valid_df=customer_df.withColumn('valid_country',when(col('state').isin(state_codes),'yes').otherwise('no'))
+final_df=customer_df.withColumn('category',when((col('customer_id').isNotNull()) & (col('name').isNotNull()) & ((col('email').contains('@'))& (col('email').contains('.com'))) & (col('state').isin(state_codes)) & (col('age')>=18),'target').otherwise('discarded'))
+final_df.write.partitionBy('category').format('parquet').mode('append').save('abfss://source@storageaccountcust.dfs.core.windows.net/files/')
